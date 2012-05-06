@@ -1443,6 +1443,102 @@ sub send_ussd {
     }
     return $answer;
 }
+
+# example CNMI session from SE Txxx phone
+# AT+CNMI=?
+# +CNMI: (2),(0,1,3),(0,2),(0,1),(0)
+# AT+CNMI?
+# +CNMI: 2,0,0,0,0
+# AT+CNMI=2,2,0,1,0
+# +CMS ERROR: 303
+# AT+CNMI=2,0,0,1,0
+# OK
+sub set_new_message_indication
+{
+    my ($self, $cnmiopt) = @_; # +CNMI=[<mode>[,<mt>[,<bm>[,<ds>[,<bfr>]]]]]  
+    my @cnmioptmap = qw/mode mt bm ds bfr/;
+
+    if (!$self->test_command('CNMI')) 
+    {
+        $self->log->write('warning','"CNMI" command unsupported');
+        return 0;
+    }
+ 
+    $self->atsend('AT+CNMI=?' . Device::Modem::CR);
+    my ($code, $cnmi_acceptable) = $self->parse_answer($Device::Modem::STD_RESPONSE);
+
+    if ($code =~ /ERROR/) {
+        $self->log->write('warning','error status for "CNMI=?" command');
+        return 0;
+    }
+
+    $self->log->write('info',"CNMI=? = $cnmi_acceptable");
+
+    my @cnmi_acc;
+    if ($cnmi_acceptable =~ m/\((.*)\),\((.*)\),\((.*)\),\((.*)\),\((.*)\)/)
+    {
+        @cnmi_acc = ($1,$2,$3,$4,$5);
+        $self->log->write('info',"acceptable CNMI:$1|$2|$3|$4|$5:".join("|",@cnmi_acc));
+    }
+    else
+    {
+        $self->log->write('warning','invalid format for CNMI');
+        return 0;
+    }
+
+    $self->atsend('AT+CNMI?' . Device::Modem::CR);
+    my ($code, $cnmi) = $self->parse_answer($Device::Modem::STD_RESPONSE);
+
+    if ($code =~ /ERROR/) {
+        $self->log->write('warning','error status for "CNMI?" command');
+        return 0;
+    }
+    $cnmi =~ s/[^\d,]//g;
+    my @cnmi_current = split(/,/,$cnmi);
+
+    $self->log->write('info',"CNMI? = $cnmi");
+
+    my @cnmi_final = ();
+    for my $i (0..4)
+    {
+        my $ts = $cnmiopt->{$cnmioptmap[$i]};
+        if (!defined $ts)
+        {
+         push(@cnmi_final, $cnmi_current[$i]);
+        }
+        else
+        {
+            if (!$cnmi_acc[$i] =~ m/$ts/) # I assume only 1 digit values are possible
+            {
+                $self->log->write('warning',"CNMI set error: cannot set $ts at position $i ($cnmioptmap[$i]), accepted values are $cnmi_acc[$i]");
+                return 0;
+            }
+
+            push(@cnmi_final, $ts);
+         }
+    }
+
+    my $cnmi_new = join(",", @cnmi_final);
+    $self->log->write('info',"changing CNMI from $cnmi to $cnmi_new");
+
+    $self->atsend('AT+CNMI=' . $cnmi_new . Device::Modem::CR);
+    my $code = $self->parse_answer($Device::Modem::STD_RESPONSE);
+
+    if ($code =~ /ERROR/) {
+        $self->log->write('warning',"failure changing CNMI from $cnmi to $cnmi_new");
+        return 0;
+    }
+    else
+    {
+        $self->atsend('AT+CNMI?' . Device::Modem::CR);
+        ($code, $cnmi) = $self->parse_answer($Device::Modem::STD_RESPONSE);
+        $self->log->write('info',"CNMI after change: $cnmi");
+    }
+
+    return 1;
+}
+
+
 1;
 
 __END__
@@ -1826,6 +1922,15 @@ Send out an SMS message quickly:
     }
 
 The allowed parameters to send_sms() are:
+
+=head2 set_new_message_indication()
+
+Uses CNMI command to select if the reception of new messages from the network is indicated to the terminal. Indications are sent to the terminal as unsolicited CDS messages. The method accepts up to five fields as per specification: mode, mt, bm, ds, bfr.
+C<mt> is responsible for routing SMS-DELIVER messages (standard SMSes), C<ds> is responsible for routing SMS-STATUS-REPORTs (delivery reports).
+
+    $ok = $gsm->set_new_message_indication(
+        ds => 1
+    );
 
 =over
 
